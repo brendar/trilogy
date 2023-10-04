@@ -4,11 +4,11 @@ services:
     platform: linux/x86_64
     image: "mysql:${MYSQL_VERSION}-debian"
     command:
-    - --sql_mode=NO_ENGINE_SUBSTITUTION
-    - --server-id=1
-    - --gtid-mode=ON
-    - --enforce-gtid-consistency=ON
-    - --log-bin=mysql-bin.log
+      - --sql_mode=NO_ENGINE_SUBSTITUTION
+      - --server-id=1
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --log-bin=mysql-bin.log
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: 1
       MYSQL_DATABASE: test
@@ -16,6 +16,61 @@ services:
     volumes:
       - "db-data:/var/lib/mysql"
       - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    ports:
+      - "13306:3306"
+  zookeeper:
+    image: "zookeeper"
+  vtctld:
+    platform: linux/x86_64
+    image: vitess/lite:v17.0.3
+    command:
+      - "/vt/bin/vtctld"
+      - "--topo_global_root=/vitess"
+      - "--topo_global_server_address=zookeeper:2181"
+      - "--topo_implementation=zk2"
+      - "--alsologtostderr"
+      - "--port=15000"
+      - "--grpc_port=15999"
+      - "--service_map=grpc-vtctl,grpc-vtctld"
+    depends_on:
+      - zookeeper
+  vtctld_setup:
+    platform: linux/x86_64
+    image: vitess/lite:v17.0.3
+    command:
+      - "/bin/bash"
+      - "-c"
+      - "/vt/bin/vtctlclient --server=vtctld:15999 AddCellInfo -- --server_address=zookeeper:2181 --root=/vitess/alpha alpha && sleep infinity"
+    depends_on:
+      - vtctld
+  vtgate:
+    platform: linux/x86_64
+    image: vitess/lite:v17.0.3
+    command:
+      - "/vt/bin/vtgate"
+      - "--topo_global_root=/vitess"
+      - "--topo_global_server_address=zookeeper:2181"
+      - "--topo_implementation=zk2"
+      - "--alsologtostderr"
+      - "--port=15000"
+      - "--grpc_port=15999"
+      - "--mysql_server_port=3306"
+      - "--mysql_auth_server_impl=none"
+      - "--mysql_server_require_secure_transport=false"
+      - "--mysql_server_ssl_cert=/db-data/server-cert.pem"
+      - "--mysql_server_ssl_key=/db-data/server-key.pem"
+      - "--cell=alpha"
+      - "--cells_to_watch=alpha"
+      - "--tablet_types_to_wait=PRIMARY,REPLICA"
+      - "--service_map=grpc-vtgateservice"
+      - "--enable_system_settings=true"
+    depends_on:
+      - db # Just using this for the certs it generates
+      - vtctld_setup
+    volumes:
+      - "db-data:/db-data"
+    ports:
+      - "23306:3306"
   app:
     image: ghcr.io/trilogy-libraries/trilogy/ci-app:distro-${DISTRIBUTION_SLUG}-ruby-${RUBY_VERSION}-mysql-${MYSQL_VERSION}
     privileged: true
@@ -24,7 +79,7 @@ services:
       args:
         - DISTRIBUTION=${DISTRIBUTION}
         - RUBY_VERSION=${RUBY_VERSION}
-      cache_from: 
+      cache_from:
         - ghcr.io/trilogy-libraries/trilogy/ci-app:distro-${DISTRIBUTION_SLUG}-ruby-${RUBY_VERSION}-mysql-${MYSQL_VERSION}
     environment:
       MYSQL_HOST: db.local
